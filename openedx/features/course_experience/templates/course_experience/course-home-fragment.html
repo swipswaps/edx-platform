@@ -84,6 +84,7 @@ from openedx.features.course_experience.course_tools import HttpMethod
             % endif
         </div>
         <aside class="page-content-secondary course-sidebar">
+            <div class="proctor-test" data-course-id="${course_key}"></div>
             % if has_goal_permission:
                 <div class="section section-goals ${'' if current_goal else 'hidden'}">
                     <div class="current-goal-container">
