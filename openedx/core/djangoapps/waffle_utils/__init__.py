@@ -8,7 +8,7 @@ from contextlib import contextmanager
 
 from edx_django_utils.monitoring import set_custom_attribute
 from edx_toggles.toggles import WaffleFlag as BaseWaffleFlag
-from edx_toggles.toggles import WaffleFlagNamespace
+from edx_toggles.toggles import WaffleFlagNamespace as BaseWaffleFlagNamespace
 from edx_toggles.toggles import WaffleSwitch as BaseWaffleSwitch
 from edx_toggles.toggles import WaffleSwitchNamespace as BaseWaffleSwitchNamespace
 from opaque_keys.edx.keys import CourseKey
@@ -20,6 +20,18 @@ class WaffleSwitchNamespace(BaseWaffleSwitchNamespace):
     """
     Deprecated class: instead, use edx_toggles.toggles.WaffleSwitchNamespace.
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        warnings.warn(
+            (
+                "Importing WaffleSwitchNamespace from waffle_utils is deprecated. Instead, import from"
+                " edx_toggles.toggles."
+            ),
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        set_custom_attribute("deprecated_waffle_utils", "WaffleSwitchNamespace")
 
     @contextmanager
     def override(self, switch_name, active=True):
@@ -39,7 +51,9 @@ class WaffleSwitchNamespace(BaseWaffleSwitchNamespace):
         )
         from edx_toggles.toggles.testutils import override_waffle_switch
 
-        with override_waffle_switch(BaseWaffleSwitch(self, switch_name), active):
+        with override_waffle_switch(
+            BaseWaffleSwitch(self, switch_name, module_name=__name__), active
+        ):
             yield
 
 
@@ -56,6 +70,21 @@ class WaffleSwitch(BaseWaffleSwitch):
             stacklevel=2,
         )
         set_custom_attribute("deprecated_waffle_utils", "WaffleSwitch")
+
+
+class WaffleFlagNamespace(BaseWaffleFlagNamespace):
+    """
+    Deprecated class: instead, use edx_toggles.toggles.WaffleFlagNamespace.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        warnings.warn(
+            "Importing WaffleFlagNamespace from waffle_utils is deprecated. Instead, import from edx_toggles.toggles.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        set_custom_attribute("deprecated_waffle_utils", "WaffleFlagNamespace")
 
 
 class WaffleFlag(BaseWaffleFlag):
