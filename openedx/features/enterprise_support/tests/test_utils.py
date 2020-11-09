@@ -16,7 +16,13 @@ from openedx.features.enterprise_support.tests.factories import (
     EnterpriseCustomerBrandingConfigurationFactory,
     EnterpriseCustomerUserFactory
 )
-from openedx.features.enterprise_support.utils import ENTERPRISE_HEADER_LINKS, get_enterprise_learner_portal
+from openedx.features.enterprise_support.utils import (
+    ENTERPRISE_HEADER_LINKS,
+    clear_data_consent_share_cache,
+    get_data_consent_share_cache_key,
+    get_enterprise_learner_portal,
+    update_logistration_context_for_enterprise,
+)
 from student.tests.factories import UserFactory
 
 
@@ -32,6 +38,85 @@ class TestEnterpriseUtils(TestCase):
     def setUpTestData(cls):
         cls.user = UserFactory.create(password='password')
         super(TestEnterpriseUtils, cls).setUpTestData()
+
+    @mock.patch('openedx.features.enterprise_support.utils.get_cache_key')
+    def test_get_data_consent_share_cache_key(self, mock_get_cache_key):
+        expected_cache_key = mock_get_cache_key.return_value
+
+        assert expected_cache_key == get_data_consent_share_cache_key('some-user-id', 'some-course-id')
+
+        mock_get_cache_key.assert_called_once_with(
+            type='data_sharing_consent_needed',
+            user_id='some-user-id',
+            course_id='some-course-id',
+        )
+
+    @mock.patch('openedx.features.enterprise_support.utils.get_cache_key')
+    @mock.patch('openedx.features.enterprise_support.utils.TieredCache')
+    def test_clear_data_consent_share_cache(self, mock_tiered_cache, mock_get_cache_key):
+        user_id = 'some-user-id'
+        course_id = 'some-course-id'
+
+        clear_data_consent_share_cache(user_id, course_id)
+
+        mock_get_cache_key.assert_called_once_with(
+            type='data_sharing_consent_needed',
+            user_id='some-user-id',
+            course_id='some-course-id',
+        )
+        mock_tiered_cache.delete_all_tiers.assert_called_once_with(mock_get_cache_key.return_value)
+
+    @mock.patch('openedx.features.enterprise_support.utils.update_third_party_auth_context_for_enterprise')
+    def test_update_logistration_context_no_customer_data(self, mock_update_tpa_context):
+        request = mock.Mock()
+        context = {}
+        enterprise_customer = {}
+
+        update_logistration_context_for_enterprise(request, context, enterprise_customer)
+
+        assert context['enable_enterprise_sidebar'] is False
+        mock_update_tpa_context.assert_called_once_with(request, context, enterprise_customer)
+
+    @mock.patch('openedx.features.enterprise_support.utils.update_third_party_auth_context_for_enterprise')
+    @mock.patch('openedx.features.enterprise_support.utils.get_enterprise_sidebar_context', return_value={})
+    def test_update_logistration_context_no_sidebar_context(self, mock_sidebar_context, mock_update_tpa_context):
+        request = mock.Mock(GET={'proxy_login': False})
+        context = {}
+        enterprise_customer = {'key': 'value'}
+
+        update_logistration_context_for_enterprise(request, context, enterprise_customer)
+
+        assert context['enable_enterprise_sidebar'] is False
+        mock_update_tpa_context.assert_called_once_with(request, context, enterprise_customer)
+        mock_sidebar_context.assert_called_once_with(enterprise_customer, False)
+
+    @mock.patch('openedx.features.enterprise_support.utils.update_third_party_auth_context_for_enterprise')
+    @mock.patch('openedx.features.enterprise_support.utils.get_enterprise_sidebar_context')
+    @mock.patch('openedx.features.enterprise_support.utils.enterprise_fields_only')
+    def test_update_logistration_context_with_sidebar_context(
+            self, mock_enterprise_fields_only, mock_sidebar_context, mock_update_tpa_context
+    ):
+        request = mock.Mock(GET={'proxy_login': False})
+        context = {
+            'data': {
+                'registration_form_desc': {
+                    'thing-1': 'one',
+                    'thing-2': 'two',
+                },
+            },
+        }
+        enterprise_customer = {'name': 'pied-piper'}
+        mock_sidebar_context.return_value = {
+            'sidebar-1': 'one',
+            'sidebar-2': 'two',
+        }
+
+        update_logistration_context_for_enterprise(request, context, enterprise_customer)
+
+        assert context['enable_enterprise_sidebar'] is True
+        mock_update_tpa_context.assert_called_once_with(request, context, enterprise_customer)
+        mock_enterprise_fields_only.assert_called_once_with(context['data']['registration_form_desc'])
+        mock_sidebar_context.assert_called_once_with(enterprise_customer, False)
 
     @ddt.data(
         ('notfoundpage', 0),
