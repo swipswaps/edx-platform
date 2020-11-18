@@ -6,6 +6,7 @@ import json
 
 import ddt
 import mock
+from django.conf import settings
 from django.test import TestCase
 from django.test.utils import override_settings
 
@@ -19,9 +20,13 @@ from openedx.features.enterprise_support.tests.factories import (
 from openedx.features.enterprise_support.utils import (
     ENTERPRISE_HEADER_LINKS,
     clear_data_consent_share_cache,
+    enterprise_fields_only,
     get_data_consent_share_cache_key,
     get_enterprise_learner_portal,
+    get_enterprise_sidebar_context,
+    handle_enterprise_cookies_for_logistration,
     update_logistration_context_for_enterprise,
+    update_third_party_auth_context_for_enterprise,
 )
 from student.tests.factories import UserFactory
 
@@ -119,6 +124,24 @@ class TestEnterpriseUtils(TestCase):
         mock_sidebar_context.assert_called_once_with(enterprise_customer, False)
 
     @ddt.data(
+        {'is_proxy_login': True, 'branding_configuration': {'logo': 'path-to-logo'}},
+        {'is_proxy_login': True, 'branding_configuration': {}},
+        {'is_proxy_login': False, 'branding_configuration': {'nonsense': 'foo'}},
+    )
+    @ddt.unpack
+    def test_get_enterprise_sidebar_context(self, is_proxy_login, branding_configuration):
+        enterprise_customer = {
+            'name': 'pied-piper',
+            'branding_configuration': branding_configuration,
+        }
+        actual_result = get_enterprise_sidebar_context(enterprise_customer, is_proxy_login)
+
+        assert 'pied-piper' == actual_result['enterprise_name']
+        expected_logo_url = branding_configuration.get('logo', '')
+        assert expected_logo_url == actual_result['enterprise_logo_url']
+        self.assertIn('pied-piper', str(actual_result['enterprise_branded_welcome_string']))
+
+    @ddt.data(
         ('notfoundpage', 0),
     )
     @ddt.unpack
@@ -133,6 +156,76 @@ class TestEnterpriseUtils(TestCase):
         ) as mock_customer_request:
             self.client.get(resource)
             self.assertEqual(mock_customer_request.call_count, expected_calls)
+
+    @mock.patch('openedx.features.enterprise_support.utils.configuration_helpers.get_value')
+    def test_enterprise_fields_only(self, mock_get_value):
+        mock_get_value.return_value = ['cat', 'dog', 'sheep']
+        fields = {
+            'fields': [
+                {'name': 'cat', 'value': 1},
+                {'name': 'fish', 'value': 2},
+                {'name': 'dog', 'value': 3},
+                {'name': 'emu', 'value': 4},
+                {'name': 'sheep', 'value': 5},
+            ],
+        }
+
+        expected_fields = [
+            {'name': 'fish', 'value': 2},
+            {'name': 'emu', 'value': 4},
+        ]
+        assert expected_fields == enterprise_fields_only(fields)
+
+    @mock.patch('openedx.features.enterprise_support.utils.third_party_auth')
+    def test_update_third_party_auth_context_for_enterprise(self, mock_tpa):
+        context = {
+            'data': {
+                'third_party_auth': {
+                    'errorMessage': 'Widget error.',
+                },
+            },
+        }
+
+        enterprise_customer = mock.Mock()
+        request = mock.Mock()
+
+        # This will directly modify context
+        update_third_party_auth_context_for_enterprise(request, context, enterprise_customer)
+
+        self.assertIn(
+            'We are sorry, you are not authorized',
+            str(context['data']['third_party_auth']['errorMessage'])
+        )
+        self.assertIn(
+            'Widget error.',
+            str(context['data']['third_party_auth']['errorMessage'])
+        )
+        assert [] == context['data']['third_party_auth']['providers']
+        assert [] == context['data']['third_party_auth']['secondaryProviders']
+        self.assertFalse(context['data']['third_party_auth']['autoSubmitRegForm'])
+        self.assertIn(
+            'Just a couple steps',
+            str(context['data']['third_party_auth']['autoRegisterWelcomeMessage'])
+        )
+        assert 'Continue' == str(context['data']['third_party_auth']['registerFormSubmitButtonText'])
+
+    @mock.patch('openedx.features.enterprise_support.utils.standard_cookie_settings', return_value={})
+    def test_handle_enterprise_cookies_for_logistration(self, mock_cookie_settings):
+        context = {'enable_enterprise_sidebar': True}
+        request = mock.Mock()
+        response = mock.Mock()
+
+        handle_enterprise_cookies_for_logistration(request, response, context)
+
+        response.set_cookie.assert_called_once_with(
+            'experiments_is_enterprise',
+            'true',
+        )
+        response.delete_cookie.assert_called_once_with(
+            settings.ENTERPRISE_CUSTOMER_COOKIE_NAME,
+            domain=settings.BASE_COOKIE_DOMAIN,
+        )
+        mock_cookie_settings.assert_called_once_with(request)
 
     @override_waffle_flag(ENTERPRISE_HEADER_LINKS, True)
     def test_get_enterprise_learner_portal_uncached(self):
