@@ -5,7 +5,7 @@ from textwrap import dedent
 
 from django.core.management.base import BaseCommand
 from opaque_keys.edx.locator import LibraryLocator
-from organizations.models import Organization, OrganizationCourse
+from organizations.api import bulk_add_organizations, bulk_add_organization_courses
 
 from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
 from xmodule.modulestore.django import modulestore
@@ -19,19 +19,35 @@ class Command(BaseCommand):
     help = dedent(__doc__).strip()
 
     def add_arguments(self, parser):
+        # @@TODO
         _ = parser
 
     def handle(self, *args, **options):
-        org_course_pairs = find_unique_org_course_pairs()
-        org_library_pairs = find_unique_org_library_pairs(get_split_modulestore())
-        orgs = (
-            {org for org, _ in org_course_pairs} |
-            {org for org, _ in org_library_pairs}
+        # @@TODO: terminology comments
+        # @@TODO: option to list instead of apply
+
+        orgslug_coursekey_pairs = find_orgslug_coursekey_pairs()
+        orgslug_library_pairs = find_orgslug_library_pairs(get_split_modulestore())
+        orgslugs = sorted(
+            {orgslug for orgslug, _ in orgslug_coursekey_pairs} |
+            {orgslug for orgslug, _ in orgslug_library_pairs}
         )
-        missing_orgs = find_missing_orgs(orgs)
-        print("org_course_pairs:", org_course_pairs)
-        print("org_library_pairs:", org_library_pairs)
-        print("missing_orgs:", missing_orgs)
+
+        # edx-organizations code will handle:
+        # * Not overwriting existing organizations.
+        # * Skipping duplicates, based on the short name (case-INsensiive).
+        orgs_by_slug = {
+            orgslug: {
+                "short_name": orgslug,
+                "name": orgslug,
+            } for orgslug in orgslugs
+        }
+        bulk_add_organizations(orgs_by_slug.values())
+        org_coursekey_pairs = [
+            (orgs_by_slug[orgslug], coursekey)
+            for orgslug, coursekey in orgslug_coursekey_pairs
+        ]
+        bulk_add_organization_courses(org_coursekey_pairs)
 
 
 def get_split_modulestore():
@@ -52,10 +68,10 @@ def get_split_modulestore():
     )
 
 
-def find_unique_org_course_pairs():
+def find_orgslug_coursekey_pairs():
     """
-    Returns the unique pairs of (organization short name, course run key)
-    from the CourseOverviews table,
+    Returns the (case-sensitively) unique pairs of
+    (organization slug course run key) from the CourseOverviews table,
     which should contain all course runs in the system.
 
     Returns: set[tuple[str, str]]
@@ -63,10 +79,10 @@ def find_unique_org_course_pairs():
     # Using a set comprehension removes any duplicate (org, id) pairs.
     return {
         (
-            org_short_name,
+            org_slug,
             str(course_key),
         )
-        for org_short_name, course_key
+        for org_slug, course_key
         # Worth noting: This will load all CourseOverviews, no matter their VERSION.
         # This is intentional: there may be course runs that haven't updated
         # their CourseOverviews entry since the last schema change; we still want
@@ -75,13 +91,14 @@ def find_unique_org_course_pairs():
         # Skip any entries with the bogus default 'org' value.
         # It would only be there for *very* outdated course overviews--there
         # should be none on edx.org, but they could plausibly exist in the community.
-        if org_short_name != "outdated_entry"
+        if org_slug != "outdated_entry"
     }
 
 
-def find_unique_org_library_pairs(split_modulestore):
+def find_orgslug_library_pairs(split_modulestore):
     """
-    Returns the unique pairs of (organization short name, content library key)
+    Returns the (case-insensitively) unique pairs of
+    (organization short name, content library key)
     from the 'library' branch of the Split module store index,
     which should contain all modulestore-based content libraries in the system.
 
@@ -111,61 +128,3 @@ def find_unique_org_library_pairs(split_modulestore):
         # content libraries.
         in split_modulestore.find_matching_course_indexes(branch="library")
     }
-
-
-def find_missing_orgs(orgs):
-    """
-    Given a set of organization short names, query Organizations table to find the
-    ones that do not currently map to an organization in the database.
-
-    Arguments:
-        orgs (set[str])
-
-    Returns: set[str]
-    """
-    existing_orgs = Organization.objects.values_list("short_name", flat=True)
-    return orgs - set(existing_orgs)
-
-
-def bulk_create_missing_orgs(orgs):
-    """
-    Bulk-create missing organizations.
-
-    Arguments:
-        orgs (set[str]): set of short names for organizations to be created.
-
-    Returns: set[str]
-    """
-    # Alphabetize short names to make this function more deterministic.
-    orgs_sorted = sorted(orgs)
-
-    # Bulk create all organizations in one go.
-    # Note that Django `bulk_create` as several limitations, which we accept here.
-    # For example, it does not trigger pre_save/post_save signals.
-    # See https://docs.djangoproject.com/en/2.2/ref/models/querysets/#bulk-create for details.
-    Organization.objects.bulk_create(
-        Organization(
-            name=org,
-            short_name=org,
-            description=None,
-            active=True,
-            logo=None,
-        )
-        for org in orgs_sorted
-    )
-
-
-def bulk_create_missing_org_courses(org_course_pairs):
-    """
-    Bulk-create missing organizations-course associations.
-
-    Arguments:
-        org_course_pairs (set[tuple[str, str]]):
-            set of pairs of (organization short name, course run id)
-
-    Returns: set[str]
-    """
-    # @@TODO: Write this
-    _ = org_course_pairs
-    _ = OrganizationCourse
-    return set()
