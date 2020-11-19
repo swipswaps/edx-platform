@@ -4,8 +4,10 @@
 from textwrap import dedent
 
 from django.core.management.base import BaseCommand
+from opaque_keys.edx.keys import CourseKey
 from opaque_keys.edx.locator import LibraryLocator
-from organizations.api import bulk_add_organizations, bulk_add_organization_courses
+from organizations.api import bulk_add_organization_courses, bulk_add_organizations
+from organizations.models import Organization, OrganizationCourse
 
 from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
 from xmodule.modulestore.django import modulestore
@@ -19,12 +21,16 @@ class Command(BaseCommand):
     help = dedent(__doc__).strip()
 
     def add_arguments(self, parser):
-        # @@TODO
-        _ = parser
+        parser.add_argument(
+            '--apply',
+            action='store_true',
+            help="Apply backfill to database (instead of just showing)."
+        )
 
     def handle(self, *args, **options):
+        apply_backfill = options.get('pull', False)
+
         # @@TODO: terminology comments
-        # @@TODO: option to list instead of apply
 
         orgslug_coursekey_pairs = find_orgslug_coursekey_pairs()
         orgslug_library_pairs = find_orgslug_library_pairs(get_split_modulestore())
@@ -33,20 +39,45 @@ class Command(BaseCommand):
             {orgslug for orgslug, _ in orgslug_library_pairs}
         )
 
-        # edx-organizations code will handle:
-        # * Not overwriting existing organizations.
-        # * Skipping duplicates, based on the short name (case-INsensiive).
         orgs_by_slug = {
             orgslug: {
                 "short_name": orgslug,
                 "name": orgslug,
             } for orgslug in orgslugs
         }
-        bulk_add_organizations(orgs_by_slug.values())
         org_coursekey_pairs = [
             (orgs_by_slug[orgslug], coursekey)
             for orgslug, coursekey in orgslug_coursekey_pairs
         ]
+
+        if not apply_backfill:
+            existing_orgslugs = {
+                orgslug.lower()
+                for orgslug
+                in Organization.objects.filter(active=True).values_list('short_name')
+            }
+            existing_orgslug_coursekey_pairs = [
+                (orgslug.lower(), CourseKey.from_string(course_id))
+                for orgslug, course_id
+                in OrganizationCourse.objects.filter(active=True).values_list(
+                    'organization__short_name',
+                    'course_id',
+                )
+            ]
+            print("Organizations that will be created:")
+            for orgslug in orgslugs:
+                if orgslug.lower() not in existing_orgslugs:
+                    print("+", orgslug)
+            print("Organization-course linkages that will be created:")
+            for orgslug, course_key in orgslug_coursekey_pairs:
+                if (orgslug.lower(), course_key) not in existing_orgslug_coursekey_pairs:
+                    print("+ ({}, {})".format(orgslug, course_key))
+            return
+
+        # edx-organizations code will handle:
+        # * Not overwriting existing organizations.
+        # * Skipping duplicates, based on the short name (case-INsensiive).
+        bulk_add_organizations(orgs_by_slug.values())
         bulk_add_organization_courses(org_coursekey_pairs)
 
 
@@ -74,13 +105,13 @@ def find_orgslug_coursekey_pairs():
     (organization slug course run key) from the CourseOverviews table,
     which should contain all course runs in the system.
 
-    Returns: set[tuple[str, str]]
+    Returns: set[tuple[str, CourseKey]]
     """
     # Using a set comprehension removes any duplicate (org, id) pairs.
     return {
         (
             org_slug,
-            str(course_key),
+            course_key,
         )
         for org_slug, course_key
         # Worth noting: This will load all CourseOverviews, no matter their VERSION.
@@ -111,7 +142,7 @@ def find_orgslug_library_pairs(split_modulestore):
     Arguments:
         split_modulestore (SplitMongoModuleStore)
 
-    Returns: set[tuple[str, str]]
+    Returns: set[tuple[str, LibraryLocator]]
     """
     return {
         # library_index["course"] is actually the 'library slug',
@@ -120,7 +151,7 @@ def find_orgslug_library_pairs(split_modulestore):
         # before content libraries were envisioned.
         (
             library_index["org"],
-            str(LibraryLocator(library_index["org"], library_index["course"])),
+            LibraryLocator(library_index["org"], library_index["course"]),
         )
         for library_index
         # Again, 'course' here refers to course-like objects, which includes
