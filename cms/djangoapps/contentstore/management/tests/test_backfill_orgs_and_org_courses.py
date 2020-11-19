@@ -11,5 +11,6 @@ class BackfillOrgsAndOrgCoursesTest(SharedModuleStoreTestCase):
     @@TODO
     """
     def test_placeholder(self):
-        call_command("backfill_orgs_and_org_courses")
+        call_command("backfill_orgs_and_org_courses", "--dry")
+        call_command("backfill_orgs_and_org_courses", "--apply")
         assert True

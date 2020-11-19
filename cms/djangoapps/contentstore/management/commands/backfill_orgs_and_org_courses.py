@@ -26,19 +26,21 @@ class Command(BaseCommand):
             action='store_true',
             help="Apply backfill to database (instead of just showing)."
         )
+        parser.add_argument(
+            '--dry',
+            action='store_true',
+            help="Apply backfill to database (instead of just showing)."
+        )
 
     def handle(self, *args, **options):
-        apply_backfill = options.get('pull', False)
 
-        # @@TODO: terminology comments
-
+        # Find `orgs` and `org_coursekey_pairs` to be bulk-added.
         orgslug_coursekey_pairs = find_orgslug_coursekey_pairs()
         orgslug_library_pairs = find_orgslug_library_pairs(get_split_modulestore())
         orgslugs = sorted(
             {orgslug for orgslug, _ in orgslug_coursekey_pairs} |
             {orgslug for orgslug, _ in orgslug_library_pairs}
         )
-
         orgs_by_slug = {
             orgslug: {
                 "short_name": orgslug,
@@ -49,36 +51,45 @@ class Command(BaseCommand):
             (orgs_by_slug[orgslug], coursekey)
             for orgslug, coursekey in orgslug_coursekey_pairs
         ]
+        orgs = orgs_by_slug.values()
 
-        if not apply_backfill:
-            existing_orgslugs = {
-                orgslug.lower()
-                for orgslug
-                in Organization.objects.filter(active=True).values_list('short_name')
-            }
-            existing_orgslug_coursekey_pairs = [
-                (orgslug.lower(), CourseKey.from_string(course_id))
-                for orgslug, course_id
-                in OrganizationCourse.objects.filter(active=True).values_list(
-                    'organization__short_name',
-                    'course_id',
-                )
-            ]
-            print("Organizations that will be created:")
-            for orgslug in orgslugs:
-                if orgslug.lower() not in existing_orgslugs:
-                    print("+", orgslug)
-            print("Organization-course linkages that will be created:")
-            for orgslug, course_key in orgslug_coursekey_pairs:
-                if (orgslug.lower(), course_key) not in existing_orgslug_coursekey_pairs:
-                    print("+ ({}, {})".format(orgslug, course_key))
-            return
-
-        # edx-organizations code will handle:
+        # Note that edx-organizations code will handle:
         # * Not overwriting existing organizations.
         # * Skipping duplicates, based on the short name (case-INsensiive).
-        bulk_add_organizations(orgs_by_slug.values())
+
+        # Start with a dry run.
+        # This will log to the user which orgs/org-courses will be created/reactivated.
+        bulk_add_organizations(orgs, dry_run=True)
+        bulk_add_organization_courses(org_coursekey_pairs, dry_run=True)
+        if not should_apply_changes(options):
+            print("No changes applied.")
+            return
+
+        # It's go time.
+        print("Applying changes...")
+        bulk_add_organizations(orgs)
         bulk_add_organization_courses(org_coursekey_pairs)
+        print("Changes applied successfully.")
+
+
+def should_apply_changes(options):
+    """
+    Should we apply the changes to the db?
+
+    If already specified on the command line, use that value.
+
+    Otherwise, prompt.
+    """
+    if options.get('apply') and options.get('dry'):
+        raise CommandError("Only one of 'apply' and 'dry' may be specified")
+    if options.get('apply'):
+        return True
+    if options.get('dry'):
+        return False
+    answer = ""
+    while answer.lower() not in {'y', 'yes', 'n', 'no'}:
+        answer = input('Commit changes shown above to the database [y/n]? ')
+    return answer.lower().startswith('y')
 
 
 def get_split_modulestore():
